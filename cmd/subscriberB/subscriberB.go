@@ -3,20 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson"
 	"log"
 	"time"
 
-	fuzz "github.com/google/gofuzz" // Used for creating random todo items
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"mongo-change-stream-demo/internal/app"
 )
-
-type todo struct {
-	Item string `bson:"item"`
-	Done bool   `bson:"done"`
-}
 
 type documentKey struct {
 	ID primitive.ObjectID `bson:"_id"`
@@ -39,7 +34,7 @@ type changeEvent struct {
 	ID            changeID            `bson:"_id"`
 	OperationType string              `bson:"operationType"`
 	ClusterTime   primitive.Timestamp `bson:"clusterTime"`
-	FullDocument  todo                `bson:"fullDocument"`
+	FullDocument  app.Event           `bson:"fullDocument"`
 	DocumentKey   documentKey         `bson:"documentKey"`
 	Ns            namespace           `bson:"ns"`
 }
@@ -63,27 +58,26 @@ func main() {
 	fmt.Println("Connected to MongoDB!")
 
 	// Get a handle for your collection
-	collection := client.Database("test").Collection("todo")
+	collection := client.Database("test").Collection("event")
 
-	// Watches the todo collection and prints out any changed documents
-	go watch(collection)
-
-	// Inserts random todo items at two second intervals
-	insert(collection)
-
+	// Watches the event collection and prints out any changed documents. The pipeline for the server-side contains a
+	// filter to let the server propagate change events for insert where MessageID start with the given UUID.
+	watch(collection)
 }
 
 func watch(collection *mongo.Collection) {
+	// Create a mact pipeline the server will process as part of change stream update. We are also concerned about
+	// insert events for documents where the MessageID started with the given UUID string.
 	matchPipeline := bson.D{
 		{
-			"$match", bson.D{
-				{"operationType", "insert"},
-				{"fullDocument.item", primitive.Regex{Pattern: "^[a-z][a-z]", Options: ""}},
+			Key: "$match", Value: bson.D{
+				{Key: "operationType", Value: "insert"},
+				{Key: "fullDocument.message_id", Value: primitive.Regex{Pattern: "^d692e245-a93d-45b7-910f-e61d8b4f6035", Options: ""}},
 			},
 		},
 	}
 
-	// Watch the todo collection
+	// Watch the event collection
 	cs, err := collection.Watch(context.TODO(), mongo.Pipeline{matchPipeline})
 	if err != nil {
 		fmt.Println(err.Error())
@@ -91,36 +85,16 @@ func watch(collection *mongo.Collection) {
 
 	// Whenever there is a new change event, decode the change event and print some information about it
 	for cs.Next(context.TODO()) {
-		var changeEvent changeEvent
+		fmt.Println(cs.Current)
 
-		err := cs.Decode(&changeEvent)
+		var eventMessage changeEvent
+
+		err := cs.Decode(&eventMessage)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		fmt.Printf("Change Event: %v\nTodo Item: %v\nDone: %v\n\n", changeEvent.OperationType, changeEvent.FullDocument.Item, changeEvent.FullDocument.Done)
-	}
-}
-
-func insert(collection *mongo.Collection) {
-	unicodeRanges := fuzz.UnicodeRanges{
-		{'a', 'z'},
-		{'0', '9'}, // You can also use 0x0030 as 0, 0x0039 as 9.
-	}
-
-	f := fuzz.New().Funcs(unicodeRanges.CustomStringFuzzFunc())
-
-	for {
-		t := todo{}
-
-		f.Fuzz(&t.Item)
-		f.Fuzz(&t.Done)
-
-		_, err := collection.InsertOne(context.TODO(), t)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		time.Sleep(2 * time.Second)
+		fmt.Printf("Change Event: %v\nMessageID: %v\nMessage: %v\nCluster Time: %s\n\n",
+			eventMessage.OperationType, eventMessage.FullDocument.MessageID, eventMessage.FullDocument.Message, time.Unix(int64(eventMessage.ClusterTime.T), 0))
 	}
 }
