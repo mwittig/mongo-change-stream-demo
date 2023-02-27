@@ -40,17 +40,19 @@ type changeEvent struct {
 }
 
 func main() {
+	ctx := context.TODO()
+
 	// Set client options
 	clientOptions := options.Client().ApplyURI("mongodb://mongo1:30001")
 
 	// Connect to MongoDB
-	client, err := mongo.Connect(context.TODO(), clientOptions)
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Check the connection
-	err = client.Ping(context.TODO(), nil)
+	err = client.Ping(ctx, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,12 +62,14 @@ func main() {
 	// Get a handle for your collection
 	collection := client.Database("test").Collection("event")
 
+	csCtx, _ := context.WithCancel(ctx)
+
 	// Watches the event collection and prints out any changed documents. The pipeline for the server-side contains a
 	// filter to let the server propagate change events for insert where MessageID start with the given UUID.
-	watch(collection)
+	watch(csCtx, collection)
 }
 
-func watch(collection *mongo.Collection) {
+func watch(ctx context.Context, collection *mongo.Collection) {
 	// Create a mact pipeline the server will process as part of change stream update. We are also concerned about
 	// insert events for documents where the MessageID started with the given UUID string.
 	matchPipeline := bson.D{
@@ -78,13 +82,13 @@ func watch(collection *mongo.Collection) {
 	}
 
 	// Watch the event collection
-	cs, err := collection.Watch(context.TODO(), mongo.Pipeline{matchPipeline})
+	cs, err := collection.Watch(ctx, mongo.Pipeline{matchPipeline})
 	if err != nil {
 		fmt.Println(err.Error())
 	}
 
 	// Whenever there is a new change event, decode the change event and print some information about it
-	for cs.Next(context.TODO()) {
+	for cs.Next(ctx) {
 		fmt.Println(cs.Current)
 
 		var eventMessage changeEvent
